@@ -1,0 +1,6 @@
+PyQt6>=6.4
+PyQt6-WebEngine>=6.4
+PyYAML>=6.0
+pyserial>=3.5
+pymavlink>=2.4.0
+matplotlib>=3.5

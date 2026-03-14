@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Map</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    html, body { margin:0; padding:0; width:100%; height:100%; }
+    #map-wrap { position: relative; width:100%; height:100%; min-height:300px; }
+    #map { width:100%; height:100%; min-height:300px; background:#d0d0d0; }
+    #zoom-level-hint { position: absolute; bottom: 10px; left: 10px; z-index: 1000; background: rgba(255,255,255,0.9); padding: 4px 10px; border-radius: 4px; font-size: 13px; box-shadow: 0 1px 4px rgba(0,0,0,0.2); pointer-events: none; }
+    .drone-icon { background: none !important; border: none !important; }
+    .operator-icon { background: none !important; border: none !important; }
+    .leaflet-marker-icon.marker-highlight { filter: drop-shadow(0 0 8px #ff0); transform: scale(1.15); }
+    .operator-icon.leaflet-marker-icon.marker-highlight { filter: drop-shadow(0 0 8px #ff0); transform: scale(1.15); }
+    .operator-icon.leaflet-marker-icon.marker-highlight > div { background: #ff0 !important; color: #333 !important; }
+    .drone-icon.alarm-area > div { border-width: 4px !important; border-style: solid !important; animation: flash-red 0.7s ease-in-out infinite; -webkit-animation: flash-red 0.7s ease-in-out infinite; }
+    .drone-icon.height-alarm > div { border-width: 4px !important; border-style: solid !important; animation: flash-yellow 0.7s ease-in-out infinite; -webkit-animation: flash-yellow 0.7s ease-in-out infinite; }
+    @keyframes flash-red { 0%, 100% { border-color: #c00; box-shadow: 0 0 4px #c00; filter: brightness(1); } 50% { border-color: #f66; box-shadow: 0 0 18px 2px #f00; filter: brightness(1.15); } }
+    @-webkit-keyframes flash-red { 0%, 100% { border-color: #c00; box-shadow: 0 0 4px #c00; filter: brightness(1); } 50% { border-color: #f66; box-shadow: 0 0 18px 2px #f00; filter: brightness(1.15); } }
+    @keyframes flash-yellow { 0%, 100% { border-color: #d90; box-shadow: 0 0 4px #fa0; filter: brightness(1); } 50% { border-color: #ff0; box-shadow: 0 0 18px 2px #fc0; filter: brightness(1.2); } }
+    @-webkit-keyframes flash-yellow { 0%, 100% { border-color: #d90; box-shadow: 0 0 4px #fa0; filter: brightness(1); } 50% { border-color: #ff0; box-shadow: 0 0 18px 2px #fc0; filter: brightness(1.2); } }
+  </style>
+</head>
+<body>
+  <div id="map-wrap">
+    <div id="map"></div>
+    <div id="zoom-level-hint">级别 —</div>
+  </div>
+  <script>
+    (function waitForLeaflet() {
+      if (typeof L === 'undefined') {
+        setTimeout(waitForLeaflet, 30);
+        return;
+      }
+      var defaultCenter = [31.2304, 121.4737];
+      var defaultZoom = 14;
+      var map = null;
+      var markers = {};
+      var polylines = {};
+      var operatorLines = {};
+      var operatorMarkers = {};
+
+      function unhighlightAll() {
+        Object.keys(markers).forEach(function(id) {
+          var el = markers[id]._icon;
+          if (el) el.classList.remove('marker-highlight');
+        });
+        Object.keys(operatorMarkers).forEach(function(id) {
+          var el = operatorMarkers[id]._icon;
+          if (el) el.classList.remove('marker-highlight');
+        });
+      }
+      function setHighlight(marker, on) {
+        if (!marker || !marker._icon) return;
+        if (on) marker._icon.classList.add('marker-highlight');
+        else marker._icon.classList.remove('marker-highlight');
+      }
+
+      function toQuadKey(x, y, zoom) {
+        var key = '';
+        for (var i = zoom; i > 0; i--) {
+          var b = 0;
+          var mask = 1 << (i - 1);
+          if ((x & mask) !== 0) b++;
+          if ((y & mask) !== 0) b += 2;
+          key += b.toString();
+        }
+        return key;
+      }
+      var LLBAND = [75, 60, 45, 30, 15, 0];
+      var LL2MC = [
+        [-0.0015702102444, 111320.7020616939, 1704480524535203, -10338987376042340, 26112667856603880, -35149669176653700, 26595700718403920, -10725012454188240, 1800819912950474, 82.5],
+        [0.0008277824516172526, 111320.7020463578, 647795574.6671607, -4082003173.641316, 10774905663.51142, -15171875531.51559, 12053065338.62167, -5124939663.577472, 913311935.9512032, 67.5],
+        [0.00337398766765, 111320.7020202162, 4481351.045890365, -23393751.19931662, 79682215.47186455, -115964993.2797253, 97236711.15602145, -43661946.33752821, 8477230.501135234, 52.5],
+        [0.00220636496208, 111320.7020209128, 51751.86112841131, 3796837.749470245, 992013.7397791013, -1221952.21711287, 1340652.697009075, -620943.6990984312, 144416.9293806241, 37.5],
+        [-0.0003441963504368392, 111320.7020576856, 278.2353980772752, 2485758.690035394, 6070.750963243378, 54821.18345352118, 9540.606633304236, -2710.55326746645, 1405.483844121726, 22.5],
+        [-0.0003218135878613132, 111320.7020701615, 0.00369383431289, 823725.6402795718, 0.46104986909093, 2351.343141331292, 1.58060784298199, 8.77738589078284, 0.37238884252424, 7.45]
+      ];
+      function baiduGetLoop(lng, a, b) {
+        while (lng > b) lng -= (b - a);
+        while (lng < a) lng += (b - a);
+        return lng;
+      }
+      function baiduGetRange(lat, a, b) {
+        if (a != null) lat = Math.max(lat, a);
+        if (b != null) lat = Math.min(lat, b);
+        return lat;
+      }
+      function baiduConvertor(point, mc) {
+        if (!point || !mc) return point;
+        var lng = mc[0] + mc[1] * Math.abs(point.lng);
+        var c = Math.abs(point.lat) / mc[9];
+        var lat = mc[2] + mc[3]*c + mc[4]*c*c + mc[5]*c*c*c + mc[6]*c*c*c*c + mc[7]*c*c*c*c*c + mc[8]*c*c*c*c*c*c;
+        return { lng: (point.lng < 0 ? -1 : 1) * lng, lat: (point.lat < 0 ? -1 : 1) * lat };
+      }
+      function baiduLL2MC(lng, lat) {
+        lat = baiduGetRange(lat, -74, 74);
+        lng = baiduGetLoop(lng, -180, 180);
+        var mc, i;
+        for (i = 0; i < LLBAND.length; i++) {
+          if (lat >= LLBAND[i]) { mc = LL2MC[i]; break; }
+        }
+        if (!mc) {
+          for (i = LLBAND.length - 1; i >= 0; i--) {
+            if (lat <= -LLBAND[i]) { mc = LL2MC[i]; break; }
+          }
+        }
+        if (!mc) mc = LL2MC[LL2MC.length - 1];
+        var r = baiduConvertor({ lng: lng, lat: lat }, mc);
+        return { x: r.lng, y: r.lat };
+      }
+      function leafletTileToWGS84(tx, ty, z) {
+        var n = Math.pow(2, z);
+        var lng = (tx + 0.5) / n * 360 - 180;
+        var latRad = Math.atan(Math.sinh(Math.PI * (1 - 2 * (ty + 0.5) / n)));
+        var lat = latRad * 180 / Math.PI;
+        return { lng: lng, lat: lat };
+      }
+      function wgs84ToBaiduTile(tx, ty, z) {
+        var pt = leafletTileToWGS84(tx, ty, z);
+        var mc = baiduLL2MC(pt.lng, pt.lat);
+        var scale = Math.pow(2, z - 18);
+        var bx = Math.floor(mc.x * scale / 256);
+        var by = Math.floor(mc.y * scale / 256);
+        return { x: bx, y: by };
+      }
+      function createTileLayer(url, opts) {
+        if (url.indexOf('{q}') !== -1) {
+          var BingLayer = L.TileLayer.extend({
+            getTileUrl: function(coords) {
+              var q = toQuadKey(coords.x, coords.y, coords.z);
+              var s = (opts.subdomains || '0123')[(coords.x + coords.y) % (opts.subdomains || '0123').length];
+              return url.replace('{q}', q).replace(/\{s\}/g, s);
+            }
+          });
+          return new BingLayer(url, opts);
+        }
+        if (url.indexOf('bdimg.com') !== -1) {
+          var BaiduLayer = L.TileLayer.extend({
+            getTileUrl: function(coords) {
+              var b = wgs84ToBaiduTile(coords.x, coords.y, coords.z);
+              var s = (opts.subdomains || '0123')[(coords.x + coords.y) % (opts.subdomains || '0123').length];
+              return url.replace('{x}', b.x).replace('{y}', b.y).replace('{z}', coords.z).replace(/\{s\}/g, s);
+            }
+          });
+          return new BaiduLayer(url, opts);
+        }
+        return L.tileLayer(url, opts);
+      }
+      window.initMap = function(centerOrLat, zoom, tileUrl, tileOpts) {
+        if (map) {
+          Object.keys(operatorLines).forEach(function(id) { if (operatorLines[id]) map.removeLayer(operatorLines[id]); });
+          map.remove();
+        }
+        markers = {};
+        polylines = {};
+        operatorLines = {};
+        Object.keys(operatorMarkers).forEach(function(id) { if (operatorMarkers[id] && map) map.removeLayer(operatorMarkers[id]); });
+        operatorMarkers = {};
+        var center = Array.isArray(centerOrLat) ? centerOrLat : defaultCenter;
+        var z = (typeof zoom === 'number') ? zoom : defaultZoom;
+        var url = tileUrl || 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+        var opts = tileOpts || { attribution: '&copy; OpenStreetMap', maxZoom: 19 };
+        map = L.map('map', { attributionControl: false }).setView(center, z);
+        createTileLayer(url, opts).addTo(map);
+        window.map = map;
+        function updateZoomHint() {
+          var el = document.getElementById('zoom-level-hint');
+          if (el && map) el.textContent = '级别 ' + map.getZoom();
+        }
+        updateZoomHint();
+        map.on('zoomend', updateZoomHint);
+        setTimeout(function() { if (map) { map.invalidateSize(); updateZoomHint(); } }, 100);
+        return map;
+      };
+
+      window.setView = function(lat, lon, zoom) {
+        if (map) map.setView([lat, lon], zoom || map.getZoom());
+      };
+
+      var typeStyle = {
+        '固定翼': { color: '#2266cc', label: '固' },
+        'fixed_wing': { color: '#2266cc', label: '固' },
+        '多旋翼': { color: '#22aa44', label: '多' },
+        'multirotor': { color: '#22aa44', label: '多' },
+        '气球': { color: '#cc8822', label: '气' },
+        'balloon': { color: '#cc8822', label: '气' },
+        '直升机': { color: '#8822aa', label: '直' },
+        'helicopter': { color: '#8822aa', label: '直' },
+        '飞艇': { color: '#666666', label: '艇' },
+        'airship': { color: '#666666', label: '艇' }
+      };
+      function iconForType(t, hasOperator, alarmArea, heightAlarm, heading) {
+        heading = heading != null ? heading : 0;
+        var s = typeStyle[t] || { color: '#cc2222', label: '' };
+        var border = hasOperator ? '2px solid #f80' : '2px solid #fff';
+        var cls = 'drone-icon';
+        if (hasOperator) cls += ' has-operator';
+        if (alarmArea) cls += ' alarm-area';
+        else if (heightAlarm) cls += ' height-alarm';
+        var rot = -heading;
+        var arrowHtml = '<div style="width:0;height:0;border-left:8px solid transparent;border-right:8px solid transparent;border-bottom:18px solid ' + s.color + ';margin:0 auto;transform:rotate(' + rot + 'deg);"></div>';
+        var wrapHtml = '<div style="width:24px;height:24px;border:' + border + ';border-radius:12px;background:rgba(0,0,0,0.2);display:flex;align-items:center;justify-content:center;">' + arrowHtml + '</div>';
+        return L.divIcon({
+          className: cls,
+          html: wrapHtml,
+          iconSize: [24, 24],
+          iconAnchor: [12, 12]
+        });
+      }
+      function openDronePopup(m, droneId) {
+        if (!m) return;
+        var html = m._detailHtml;
+        if (html) {
+          if (m.getPopup()) m.setPopupContent(html);
+          else m.bindPopup(html, { maxWidth: 360 });
+          m.openPopup();
+        }
+        unhighlightAll();
+        setHighlight(m, true);
+        if (operatorMarkers[droneId]) setHighlight(operatorMarkers[droneId], true);
+      }
+
+      window.setDronePopupContent = function(id, content) {
+        if (!markers[id]) return;
+        markers[id]._detailHtml = content || '';
+        if (content) {
+          if (markers[id].getPopup()) markers[id].setPopupContent(content);
+          else markers[id].bindPopup(content, { maxWidth: 360 });
+        }
+      };
+
+      function setOperatorDroneLine(droneId, opLat, opLon, droneLat, droneLon) {
+        if (operatorLines[droneId]) { map.removeLayer(operatorLines[droneId]); delete operatorLines[droneId]; }
+        var line = L.polyline([[opLat, opLon], [droneLat, droneLon]], {
+          dashArray: '8, 8', color: '#f80', weight: 2, opacity: 0.85
+        }).addTo(map);
+        operatorLines[droneId] = line;
+      }
+
+      window.updateDrone = function(id, lat, lon, alt, props) {
+        if (!map) return;
+        props = props || {};
+        var tip = props.tooltip || (id + ' alt:' + (alt||0) + 'm');
+        var uaType = (props.type || '').trim();
+        var detailHtml = props.detailHtml || '';
+        var hasOperator = props.operatorLat != null && props.operatorLon != null;
+        var alarmArea = !!props.alarmArea;
+        var heightAlarm = !!props.heightAlarm;
+        var heading = props.heading != null ? props.heading : 0;
+        var icon = iconForType(uaType, hasOperator, alarmArea, heightAlarm, heading);
+        if (markers[id]) {
+          markers[id].setLatLng([lat, lon]);
+          markers[id].setIcon(icon);
+          markers[id]._operatorPos = hasOperator ? [props.operatorLat, props.operatorLon] : null;
+          markers[id]._detailHtml = detailHtml;
+          var t = markers[id].getTooltip();
+          if (t) t.setContent(tip);
+          if (detailHtml) {
+            if (markers[id].getPopup()) markers[id].setPopupContent(detailHtml);
+            else markers[id].bindPopup(detailHtml, { maxWidth: 360 });
+          }
+          if (operatorLines[id]) { map.removeLayer(operatorLines[id]); delete operatorLines[id]; }
+          if (hasOperator) setOperatorDroneLine(id, props.operatorLat, props.operatorLon, lat, lon);
+          markers[id].off('click').on('click', function() { openDronePopup(markers[id], id); });
+        } else {
+          var m = L.marker([lat, lon], { icon: icon }).addTo(map);
+          m._operatorPos = hasOperator ? [props.operatorLat, props.operatorLon] : null;
+          m._detailHtml = detailHtml;
+          m.bindTooltip(tip, { permanent: false });
+          if (detailHtml) m.bindPopup(detailHtml, { maxWidth: 360 });
+          m.on('click', function() { openDronePopup(m, id); });
+          markers[id] = m;
+          if (hasOperator) setOperatorDroneLine(id, props.operatorLat, props.operatorLon, lat, lon);
+        }
+        if (!hasOperator && operatorLines[id]) { map.removeLayer(operatorLines[id]); delete operatorLines[id]; }
+      };
+
+      window.updateOperator = function(droneId, lat, lon, alt) {
+        if (!map) return;
+        var html = '<b>操作者</b> (' + droneId + ')<br/>纬度: ' + lat.toFixed(6) + '<br/>经度: ' + lon.toFixed(6) + '<br/>高度: ' + (alt || 0).toFixed(0) + ' m';
+        if (operatorMarkers[droneId]) {
+          operatorMarkers[droneId].setLatLng([lat, lon]);
+          operatorMarkers[droneId].setPopupContent(html);
+        } else {
+          var om = L.marker([lat, lon], {
+            icon: L.divIcon({
+              className: 'operator-icon',
+              html: '<div style="width:20px;height:20px;border-radius:10px;background:#c44;color:#fff;text-align:center;line-height:20px;font-size:11px;border:2px solid #fff;">操</div>',
+              iconSize: [20, 20],
+              iconAnchor: [10, 10]
+            })
+          }).addTo(map);
+          om._droneId = droneId;
+          om.bindPopup(html, { maxWidth: 280 });
+          om.on('click', function() {
+            unhighlightAll();
+            setHighlight(om, true);
+            if (markers[droneId]) setHighlight(markers[droneId], true);
+          });
+          operatorMarkers[droneId] = om;
+        }
+        if (markers[droneId]) {
+          var dLatLng = markers[droneId].getLatLng();
+          setOperatorDroneLine(droneId, lat, lon, dLatLng.lat, dLatLng.lng);
+        }
+      };
+
+      window.removeDrone = function(id) {
+        if (markers[id]) { map.removeLayer(markers[id]); delete markers[id]; }
+        if (polylines[id]) { map.removeLayer(polylines[id]); delete polylines[id]; }
+        if (operatorLines[id]) { map.removeLayer(operatorLines[id]); delete operatorLines[id]; }
+        if (operatorMarkers[id]) { map.removeLayer(operatorMarkers[id]); delete operatorMarkers[id]; }
+      };
+
+      window.clearDrones = function() {
+        Object.keys(markers).forEach(function(id) { window.removeDrone(id); });
+      };
+
+      window.updateDroneTrajectory = function(id, latLngs) {
+        if (!map) return;
+        if (!latLngs || latLngs.length < 2) return;
+        if (polylines[id]) {
+          polylines[id].setLatLngs(latLngs);
+          polylines[id].bringToFront();
+        } else {
+          var line = L.polyline(latLngs, { color: '#3388ff', weight: 4, opacity: 0.9 });
+          line.addTo(map);
+          line.bringToFront();
+          polylines[id] = line;
+        }
+      };
+
+      window.initMap(defaultCenter, defaultZoom, null, null);
+      window.map = map;
+      setTimeout(function() { if (map) map.invalidateSize(); }, 300);
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,24 @@
+language: zh
+attitude_display_type: pfd
+gui_theme: dark
+udp_host: 127.0.0.1
+udp_port: 8888
+udp_listen_port: 0
+serial_baud: 115200
+serial_format_cmd: ''
+serial_request_stream: true
+serial_stream_rate_hz: 5
+serial_use_set_message_interval: true
+serial_message_interval_us: 200000
+data_dir: data
+logs_dir: logs
+screenshots_dir: logs/screenshots
+map_keys:
+  bing: ''
+  gaode: ''
+  baidu: ''
+  google: ''
+default_lat: 31.242747
+default_lon: 121.418324
+default_zoom: 12
+alarm_height_m: 120
